@@ -390,6 +390,8 @@ fn try_const_eval_arithmetic(op: &mut Arithmetic) -> Option<ConstantValue> {
             }
         }
         Arithmetic::Dot(op) => const_eval!(*op.lhs, op.rhs),
+        // DotI32 is a specialized instruction for DP4a, skip constant evaluation
+        Arithmetic::DotI32(_) => None,
 
         Arithmetic::Abs(op) => {
             use ConstantValue::*;
@@ -400,7 +402,9 @@ fn try_const_eval_arithmetic(op: &mut Arithmetic) -> Option<ConstantValue> {
             })
         }
         Arithmetic::Exp(op) => const_eval_float!(op.input; num::Float::exp),
+        Arithmetic::Exp2(op) => const_eval_float!(op.input; num::Float::exp2),
         Arithmetic::Log(op) => const_eval_float!(op.input; num::Float::ln),
+        Arithmetic::Log2(op) => const_eval_float!(op.input; num::Float::log2),
         Arithmetic::Log1p(op) => const_eval_float!(op.input; num::Float::ln_1p),
         Arithmetic::Cos(op) => const_eval_float!(op.input; num::Float::cos),
         Arithmetic::Sin(op) => const_eval_float!(op.input; num::Float::sin),

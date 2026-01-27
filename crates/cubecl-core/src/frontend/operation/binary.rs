@@ -582,6 +582,53 @@ impl_binary_func_fixed_output_vectorization!(
     isize
 );
 
+/// Integer dot product with i32 accumulator (DP4a)
+///
+/// For Line<i8> or Line<u8>, computes the dot product and returns i32.
+/// This maps to SPIR-V OpSDotKHR/OpUDotKHR which always output 32-bit integers.
+///
+/// Example:
+/// ```ignore
+/// let a: Line<i8> = ...;  // 4 x i8
+/// let b: Line<i8> = ...;  // 4 x i8
+/// let result: i32 = a.dot_i32(b);  // sum of element-wise products as i32
+/// ```
+pub trait DotI32: CubePrimitive + CubeType<ExpandType: DotI32Expand> + Sized {
+    /// Compute integer dot product with i32 accumulator
+    fn dot_i32(self, _rhs: Self) -> i32 {
+        unexpanded!()
+    }
+
+    #[allow(missing_docs)]
+    fn __expand_dot_i32(
+        scope: &mut Scope,
+        lhs: ExpandElementTyped<Self>,
+        rhs: ExpandElementTyped<Self>,
+    ) -> ExpandElementTyped<i32> {
+        lhs.__expand_dot_i32_method(scope, rhs)
+    }
+}
+
+/// Expand trait for DotI32
+pub trait DotI32Expand {
+    /// Expand method for dot_i32
+    fn __expand_dot_i32_method(self, scope: &mut Scope, rhs: Self) -> ExpandElementTyped<i32>;
+}
+
+impl DotI32 for i8 {}
+impl DotI32 for u8 {}
+impl DotI32 for i16 {}
+impl DotI32 for u16 {}
+
+impl<T: CubePrimitive + DotI32> DotI32Expand for ExpandElementTyped<T> {
+    fn __expand_dot_i32_method(self, scope: &mut Scope, rhs: Self) -> ExpandElementTyped<i32> {
+        // Create i32 output type
+        let out_ty = crate::ir::Type::new(i32::as_type(scope)).line(0);
+        binary_expand_fixed_output(scope, self.into(), rhs.into(), out_ty, Arithmetic::DotI32)
+            .into()
+    }
+}
+
 impl_binary_func_mixed_types!(
     Powi,
     powi,

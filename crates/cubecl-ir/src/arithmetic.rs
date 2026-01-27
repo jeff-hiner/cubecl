@@ -21,7 +21,9 @@ pub enum Arithmetic {
     Div(BinaryOperator),
     Abs(UnaryOperator),
     Exp(UnaryOperator),
+    Exp2(UnaryOperator),
     Log(UnaryOperator),
+    Log2(UnaryOperator),
     Log1p(UnaryOperator),
     Cos(UnaryOperator),
     Sin(UnaryOperator),
@@ -62,6 +64,12 @@ pub enum Arithmetic {
     Normalize(UnaryOperator),
     #[operation(commutative)]
     Dot(BinaryOperator),
+    /// Integer dot product with i32 accumulator (DP4a)
+    ///
+    /// For Line<i8> or Line<u8>, computes the dot product and returns i32.
+    /// This maps to SPIR-V OpSDotKHR/OpUDotKHR which require 32-bit output.
+    #[operation(commutative)]
+    DotI32(BinaryOperator),
     #[operation(commutative)]
     MulHi(BinaryOperator),
 }
@@ -78,7 +86,9 @@ impl Display for Arithmetic {
             Arithmetic::Div(op) => write!(f, "{} / {}", op.lhs, op.rhs),
             Arithmetic::Abs(op) => write!(f, "{}.abs()", op.input),
             Arithmetic::Exp(op) => write!(f, "{}.exp()", op.input),
+            Arithmetic::Exp2(op) => write!(f, "{}.exp2()", op.input),
             Arithmetic::Log(op) => write!(f, "{}.log()", op.input),
+            Arithmetic::Log2(op) => write!(f, "{}.log2()", op.input),
             Arithmetic::Log1p(op) => write!(f, "{}.log_1p()", op.input),
             Arithmetic::Cos(op) => write!(f, "{}.cos()", op.input),
             Arithmetic::Sin(op) => write!(f, "{}.sin()", op.input),
@@ -118,6 +128,7 @@ impl Display for Arithmetic {
             Arithmetic::Magnitude(op) => write!(f, "{}.length()", op.input),
             Arithmetic::Normalize(op) => write!(f, "{}.normalize()", op.input),
             Arithmetic::Dot(op) => write!(f, "{}.dot({})", op.lhs, op.rhs),
+            Arithmetic::DotI32(op) => write!(f, "{}.dot_i32({})", op.lhs, op.rhs),
             Arithmetic::MulHi(op) => write!(f, "mul_hi({}, {})", op.lhs, op.rhs),
         }
     }

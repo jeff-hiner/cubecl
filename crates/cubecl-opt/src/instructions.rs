@@ -86,12 +86,15 @@ impl Optimizer {
             | Arithmetic::Min(binary_operator)
             | Arithmetic::Remainder(binary_operator)
             | Arithmetic::Dot(binary_operator)
+            | Arithmetic::DotI32(binary_operator)
             | Arithmetic::MulHi(binary_operator)
             | Arithmetic::ArcTan2(binary_operator) => self.visit_binop(binary_operator, visit_read),
 
             Arithmetic::Abs(unary_operator)
             | Arithmetic::Exp(unary_operator)
+            | Arithmetic::Exp2(unary_operator)
             | Arithmetic::Log(unary_operator)
+            | Arithmetic::Log2(unary_operator)
             | Arithmetic::Log1p(unary_operator)
             | Arithmetic::Cos(unary_operator)
             | Arithmetic::Sin(unary_operator)

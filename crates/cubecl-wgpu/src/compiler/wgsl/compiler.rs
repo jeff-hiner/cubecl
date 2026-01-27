@@ -804,7 +804,15 @@ impl WgslCompiler {
                 input: self.compile_variable(op.input),
                 out: self.compile_variable(out),
             }),
+            cube::Arithmetic::Exp2(op) => instructions.push(wgsl::Instruction::Exp2 {
+                input: self.compile_variable(op.input),
+                out: self.compile_variable(out),
+            }),
             cube::Arithmetic::Log(op) => instructions.push(wgsl::Instruction::Log {
+                input: self.compile_variable(op.input),
+                out: self.compile_variable(out),
+            }),
+            cube::Arithmetic::Log2(op) => instructions.push(wgsl::Instruction::Log2 {
                 input: self.compile_variable(op.input),
                 out: self.compile_variable(out),
             }),
@@ -963,6 +971,11 @@ impl WgslCompiler {
                 rhs: self.compile_variable(op.rhs),
                 out: self.compile_variable(out),
             }),
+            cube::Arithmetic::DotI32(_) => {
+                // DotI32 (DP4a) is only supported on SPIR-V backends via OpSDotKHR/OpUDotKHR
+                // WGSL does not have native integer dot product support
+                panic!("DotI32 (DP4a) is not supported on WGSL backend. Use SPIR-V (Vulkan) backend for INT8 dot products.");
+            }
         }
     }
 

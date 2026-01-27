@@ -5,7 +5,7 @@ use crate::{
 };
 use crate::{
     ir::{BinaryOperator, Instruction, Scope, Type},
-    prelude::Dot,
+    prelude::{Dot, DotI32},
     unexpanded,
 };
 use cubecl_ir::{Comparison, ConstantValue, ExpandElement, StorageType};
@@ -275,5 +275,6 @@ impl<P: CubePrimitive> CubePrimitive for Line<P> {
 }
 
 impl<N: Dot + CubePrimitive> Dot for Line<N> {}
+impl<N: DotI32 + CubePrimitive> DotI32 for Line<N> {}
 impl<N: MulHi + CubePrimitive> MulHi for Line<N> {}
 impl<N: FloatOps + CubePrimitive> FloatOps for Line<N> {}

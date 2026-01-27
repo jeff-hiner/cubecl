@@ -215,6 +215,42 @@ impl<T: SpirvTarget> SpirvCompiler<T> {
                     self.write(&out, out_id);
                 }
             }
+            Arithmetic::DotI32(op) => {
+                // Integer dot product with i32 accumulator (DP4a)
+                // Always outputs i32 regardless of input type
+                let lhs = self.compile_variable(op.lhs);
+                let rhs = self.compile_variable(op.rhs);
+                let out = self.compile_variable(out);
+
+                let lhs_id = self.read(&lhs);
+                let rhs_id = self.read(&rhs);
+                let out_id = self.write_id(&out);
+                self.mark_uniformity(out_id, uniform);
+
+                // Output type is always i32 for DP4a
+                let out_ty = Item::Scalar(Elem::Int(32, true));
+                let ty = out_ty.id(self);
+
+                self.capabilities.insert(Capability::DotProduct);
+
+                match (lhs.elem(), rhs.elem()) {
+                    (Elem::Int(_, false), Elem::Int(_, false)) => {
+                        self.u_dot(ty, Some(out_id), lhs_id, rhs_id, None)
+                    }
+                    (Elem::Int(_, true), Elem::Int(_, false)) => {
+                        self.su_dot(ty, Some(out_id), lhs_id, rhs_id, None)
+                    }
+                    (Elem::Int(_, false), Elem::Int(_, true)) => {
+                        self.su_dot(ty, Some(out_id), rhs_id, lhs_id, None)
+                    }
+                    (Elem::Int(_, true), Elem::Int(_, true)) => {
+                        self.s_dot(ty, Some(out_id), lhs_id, rhs_id, None)
+                    }
+                    _ => panic!("DotI32 only supports integer types"),
+                }
+                .unwrap();
+                self.write(&out, out_id);
+            }
             Arithmetic::Fma(op) => {
                 let a = self.compile_variable(op.a);
                 let b = self.compile_variable(op.b);
@@ -320,10 +356,28 @@ impl<T: SpirvTarget> SpirvCompiler<T> {
                     }
                 });
             }
+            Arithmetic::Exp2(op) => {
+                self.compile_unary_op_cast(op, out, uniform, |b, out_ty, ty, input, out| {
+                    b.declare_math_mode(modes, out);
+                    T::exp2(b, ty, input, out);
+                    if matches!(out_ty.elem(), Elem::Relaxed) {
+                        b.decorate(out, Decoration::RelaxedPrecision, []);
+                    }
+                });
+            }
             Arithmetic::Log(op) => {
                 self.compile_unary_op_cast(op, out, uniform, |b, out_ty, ty, input, out| {
                     b.declare_math_mode(modes, out);
                     T::log(b, ty, input, out);
+                    if matches!(out_ty.elem(), Elem::Relaxed) {
+                        b.decorate(out, Decoration::RelaxedPrecision, []);
+                    }
+                })
+            }
+            Arithmetic::Log2(op) => {
+                self.compile_unary_op_cast(op, out, uniform, |b, out_ty, ty, input, out| {
+                    b.declare_math_mode(modes, out);
+                    T::log2(b, ty, input, out);
                     if matches!(out_ty.elem(), Elem::Relaxed) {
                         b.decorate(out, Decoration::RelaxedPrecision, []);
                     }
