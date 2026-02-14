@@ -156,7 +156,106 @@ impl WgpuServer {
                     zero_initialize_workgroup_memory: false,
                     ..Default::default()
                 },
-                cache: None,
+                cache: self.pipeline_cache.as_ref().map(|s| &s.cache),
+            });
+        Ok(Arc::new(pipeline))
+    }
+}
+
+#[cfg(feature = "spirv")]
+impl WgpuServer {
+    /// Create a compute pipeline directly from a cached SPIR-V compilation entry,
+    /// bypassing CubeCL IR generation, optimization, and code generation entirely.
+    pub(crate) fn create_pipeline_from_spirv_cache(
+        &self,
+        entry: &crate::compute::server::SpirvCacheEntry,
+    ) -> Result<Arc<ComputePipeline>, CompilationError> {
+        // 1. Create shader module from cached SPIR-V words.
+        let module = unsafe {
+            self.device.create_shader_module_passthrough(
+                wgpu::ShaderModuleDescriptorPassthrough::SpirV(
+                    wgpu::ShaderModuleDescriptorSpirV {
+                        label: Some(&entry.entrypoint_name),
+                        source: Cow::Borrowed(&entry.spirv),
+                    },
+                ),
+            )
+        };
+
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(err) = cubecl_common::future::block_on(fetch_error(&self.device)) {
+            return Err(CompilationError::Generic {
+                reason: format!("{err}"),
+                backtrace: cubecl_common::backtrace::BackTrace::capture(),
+            });
+        }
+
+        // 2. Reconstruct bind group layout from cached visibilities.
+        //    This mirrors the logic in `vulkan::bindings()` + `create_pipeline()`.
+        let mut bindings = entry.binding_visibilities.clone();
+        let mut meta = Vec::new();
+        if entry.has_metadata {
+            meta.push(cubecl_runtime::kernel::Visibility::Read);
+        }
+        meta.extend(std::iter::repeat_n(
+            cubecl_runtime::kernel::Visibility::Read,
+            entry.num_scalars,
+        ));
+
+        // When slices are shared, it needs to be read-write if ANY of the slices is read-write,
+        // and since we can't be sure, we'll assume everything is read-write.
+        if !cfg!(exclusive_memory_only) {
+            bindings.fill(cubecl_runtime::kernel::Visibility::ReadWrite);
+        }
+
+        let bindings = bindings
+            .into_iter()
+            .chain(meta)
+            .enumerate()
+            .map(|(i, visibility)| BindGroupLayoutEntry {
+                binding: i as u32,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage {
+                        read_only: matches!(
+                            visibility,
+                            cubecl_runtime::kernel::Visibility::Read
+                        ),
+                    },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            })
+            .collect::<Vec<_>>();
+
+        let layout = self
+            .device
+            .create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: None,
+                entries: &bindings,
+            });
+        let layout = self
+            .device
+            .create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[&layout],
+                push_constant_ranges: &[],
+            });
+
+        // 3. Create compute pipeline (with wgpu pipeline cache if available).
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(&entry.entrypoint_name),
+                layout: Some(&layout),
+                module: &module,
+                entry_point: Some(&entry.entrypoint_name),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    zero_initialize_workgroup_memory: false,
+                    ..Default::default()
+                },
+                cache: self.pipeline_cache.as_ref().map(|s| &s.cache),
             });
         Ok(Arc::new(pipeline))
     }

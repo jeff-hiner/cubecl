@@ -43,7 +43,9 @@ tracing = [
 log = { workspace = true }
 tracing = { workspace = true, features = ["attributes"], optional = true }
 
-cubecl-common = { path = "../cubecl-common", version = "=0.9.0", default-features = false }
+cubecl-common = { path = "../cubecl-common", version = "=0.9.0", default-features = false, features = [
+    "cache",
+] }
 cubecl-core = { path = "../cubecl-core", version = "=0.9.0", default-features = false }
 cubecl-ir = { path = "../cubecl-ir", version = "=0.9.0", default-features = false }
 cubecl-runtime = { path = "../cubecl-runtime", version = "=0.9.0", default-features = false, features = [
@@ -65,6 +67,8 @@ cubecl-cpp = { path = "../cubecl-cpp", version = "=0.9.0", features = [
     "metal",
 ], optional = true }
 
+serde = { workspace = true }
+
 bytemuck = { workspace = true }
 
 async-channel = { workspace = true }
@@ -72,6 +76,7 @@ derive-new = { workspace = true }
 hashbrown = { workspace = true }
 
 cfg-if = { workspace = true }
+dirs = { workspace = true }
 
 ## wgpu dependency for platforms other than macOS
 [target.'cfg(not(target_os = "macos"))'.dependencies]

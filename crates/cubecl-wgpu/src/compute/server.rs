@@ -8,6 +8,8 @@ use cubecl_common::{
     profile::{ProfileDuration, TimingMethod},
     stream_id::StreamId,
 };
+#[cfg(feature = "spirv")]
+use cubecl_common::cache::{Cache, CacheOption};
 use cubecl_core::{
     MemoryConfiguration, WgpuCompilationOptions,
     future::DynFut,
@@ -27,8 +29,76 @@ use cubecl_runtime::{
     storage::BindingResource,
     stream::scheduler::{SchedulerMultiStream, SchedulerMultiStreamOptions, SchedulerStrategy},
 };
+#[cfg(feature = "spirv")]
+use cubecl_runtime::kernel::Visibility;
 use hashbrown::HashMap;
 use wgpu::ComputePipeline;
+
+/// Persistent GPU pipeline cache for shader compilation across runs.
+///
+/// Wraps a [`wgpu::PipelineCache`] and its disk path so compiled shaders
+/// can be saved on shutdown and reloaded on next startup.
+pub(crate) struct PipelineCacheState {
+    /// The wgpu pipeline cache handle.
+    pub(crate) cache: wgpu::PipelineCache,
+    /// Path where the cache blob is persisted.
+    save_path: std::path::PathBuf,
+}
+
+impl std::fmt::Debug for PipelineCacheState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PipelineCacheState")
+            .field("save_path", &self.save_path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PipelineCacheState {
+    /// Create a new pipeline cache state from a wgpu cache and its save path.
+    pub(crate) fn new(cache: wgpu::PipelineCache, save_path: std::path::PathBuf) -> Self {
+        Self { cache, save_path }
+    }
+}
+
+impl PipelineCacheState {
+    /// Write the current cache contents to disk.
+    ///
+    /// This is called eagerly after each new pipeline is compiled, since the
+    /// global server static is never dropped on process exit.
+    pub(crate) fn save(&self) {
+        if let Some(data) = self.cache.get_data() {
+            if let Some(parent) = self.save_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            // Atomic write: write to temp file then rename.
+            let tmp = self.save_path.with_extension("tmp");
+            if std::fs::write(&tmp, &data).is_ok() {
+                let _ = std::fs::rename(&tmp, &self.save_path);
+            }
+        }
+    }
+}
+
+/// Cached SPIR-V compilation output, following the `PtxCacheEntry` pattern from `cubecl-cuda`.
+///
+/// Stores everything needed to recreate a compute pipeline without re-running
+/// the CubeCL IR optimizer or SPIR-V code generator.
+#[cfg(feature = "spirv")]
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, Clone)]
+pub(crate) struct SpirvCacheEntry {
+    /// Shader entrypoint function name.
+    pub(crate) entrypoint_name: String,
+    /// Workgroup dimensions `(x, y, z)`.
+    pub(crate) cube_dim: (u32, u32, u32),
+    /// Assembled SPIR-V words.
+    pub(crate) spirv: Vec<u32>,
+    /// Per-binding visibility (read vs read-write).
+    pub(crate) binding_visibilities: Vec<Visibility>,
+    /// Whether the kernel uses a metadata buffer.
+    pub(crate) has_metadata: bool,
+    /// Number of scalar parameter buffers.
+    pub(crate) num_scalars: usize,
+}
 
 /// Wgpu compute server.
 #[derive(Debug)]
@@ -39,6 +109,9 @@ pub struct WgpuServer {
     pub compilation_options: WgpuCompilationOptions,
     pub(crate) backend: wgpu::Backend,
     pub(crate) utilities: Arc<ServerUtilities<Self>>,
+    pub(crate) pipeline_cache: Option<PipelineCacheState>,
+    #[cfg(feature = "spirv")]
+    spirv_cache: Option<Cache<String, SpirvCacheEntry>>,
 }
 
 impl ServerCommunication for WgpuServer {
@@ -48,7 +121,7 @@ impl ServerCommunication for WgpuServer {
 impl WgpuServer {
     /// Create a new server.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         memory_properties: MemoryDeviceProperties,
         memory_config: MemoryConfiguration,
         compilation_options: WgpuCompilationOptions,
@@ -58,6 +131,7 @@ impl WgpuServer {
         backend: wgpu::Backend,
         timing_method: TimingMethod,
         utilities: ServerUtilities<Self>,
+        pipeline_cache: Option<PipelineCacheState>,
     ) -> Self {
         let backend_scheduler = ScheduledWgpuBackend::new(
             device.clone(),
@@ -87,6 +161,16 @@ impl WgpuServer {
             ),
             backend,
             utilities: Arc::new(utilities),
+            pipeline_cache,
+            #[cfg(feature = "spirv")]
+            spirv_cache: config.compilation.cache.as_ref().map(|cache_config| {
+                Cache::new(
+                    "spirv",
+                    CacheOption::default()
+                        .name("wgpu-spirv")
+                        .root(cache_config.root()),
+                )
+            }),
         }
     }
 
@@ -121,6 +205,24 @@ impl WgpuServer {
             return Ok(pipeline.clone());
         }
 
+        // Check SPIR-V disk cache before running the full compilation pipeline.
+        #[cfg(feature = "spirv")]
+        let stable_name = if let Some(cache) = &self.spirv_cache {
+            let name = kernel_id.stable_format();
+            if let Some(entry) = cache.get(&name) {
+                log::trace!("Using SPIR-V cache");
+                let pipeline = self.create_pipeline_from_spirv_cache(entry)?;
+                self.pipelines.insert(kernel_id, pipeline.clone());
+                if let Some(cache) = &self.pipeline_cache {
+                    cache.save();
+                }
+                return Ok(pipeline);
+            }
+            Some(name)
+        } else {
+            None
+        };
+
         let mut compiler = compiler(self.backend);
         let mut compile = compiler.compile(self, kernel, mode)?;
 
@@ -131,6 +233,26 @@ impl WgpuServer {
             ));
         }
         self.scheduler.logger.log_compilation(&compile);
+
+        // Extract cache data before create_pipeline consumes the compiled kernel.
+        #[cfg(feature = "spirv")]
+        let spirv_cache_data = if self.spirv_cache.is_some() && stable_name.is_some() {
+            if let Some(crate::AutoRepresentation::SpirV(repr)) = &compile.repr {
+                Some(SpirvCacheEntry {
+                    entrypoint_name: compile.entrypoint_name.clone(),
+                    cube_dim: (compile.cube_dim.x, compile.cube_dim.y, compile.cube_dim.z),
+                    spirv: repr.assemble(),
+                    binding_visibilities: repr.bindings.iter().map(|b| b.visibility).collect(),
+                    has_metadata: repr.has_metadata,
+                    num_scalars: repr.scalars.len(),
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // /!\ Do not delete the following commented code.
         // This is useful while working on the metal compiler.
         // Also the errors are printed nicely which is not the case when this is the runtime
@@ -154,7 +276,22 @@ impl WgpuServer {
         //     // std::process::exit(status.code().unwrap());
         // }
         let pipeline = self.create_pipeline(compile, mode)?;
+
+        // Insert into SPIR-V disk cache after successful compilation.
+        #[cfg(feature = "spirv")]
+        if let Some(cache) = &mut self.spirv_cache {
+            if let (Some(name), Some(entry)) = (stable_name, spirv_cache_data) {
+                if let Err(err) = cache.insert(name, entry) {
+                    log::warn!("Unable to save SPIR-V cache: {err:?}");
+                }
+            }
+        }
+
         self.pipelines.insert(kernel_id.clone(), pipeline.clone());
+
+        if let Some(cache) = &self.pipeline_cache {
+            cache.save();
+        }
 
         Ok(pipeline)
     }

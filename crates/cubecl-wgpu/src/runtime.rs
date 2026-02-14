@@ -1,5 +1,6 @@
 use crate::{
-    AutoCompiler, AutoGraphicsApi, GraphicsApi, WgpuDevice, backend, compute::WgpuServer,
+    AutoCompiler, AutoGraphicsApi, GraphicsApi, WgpuDevice, backend,
+    compute::{WgpuServer, server::PipelineCacheState},
     contiguous_strides,
 };
 use cubecl_common::device::{Device, DeviceState};
@@ -198,6 +199,8 @@ pub async fn init_setup_async<G: GraphicsApi>(
 }
 
 pub(crate) fn create_server(setup: WgpuSetup, options: RuntimeOptions) -> WgpuServer {
+    let pipeline_cache = create_pipeline_cache(&setup.device, &setup.adapter);
+
     let limits = setup.device.limits();
     let mut adapter_limits = setup.adapter.limits();
 
@@ -297,6 +300,7 @@ pub(crate) fn create_server(setup: WgpuSetup, options: RuntimeOptions) -> WgpuSe
         setup.backend,
         time_measurement,
         ServerUtilities::new(device_props, logger, setup.backend),
+        pipeline_cache,
     )
 }
 
@@ -459,6 +463,49 @@ fn select_from_adapter_list(
     }
 
     adapters.remove(num)
+}
+
+/// Load or create a persistent pipeline cache for the given adapter.
+///
+/// Returns `None` on wasm (no disk access), when the backend doesn't support
+/// pipeline caching, or when the cache directory can't be determined.
+#[cfg(not(target_family = "wasm"))]
+fn create_pipeline_cache(
+    device: &wgpu::Device,
+    adapter: &wgpu::Adapter,
+) -> Option<PipelineCacheState> {
+    let key = wgpu::util::pipeline_cache_key(&adapter.get_info())?;
+    let cache_dir = dirs::cache_dir()?.join("cubecl").join("pipeline_cache");
+    let save_path = cache_dir.join(format!("{key}.bin"));
+
+    let data = std::fs::read(&save_path).ok();
+    let cached_bytes = data.as_ref().map_or(0, Vec::len);
+
+    // SAFETY: The `fallback: true` flag means wgpu will create a fresh empty
+    // cache if the data is stale, corrupt, or from a different driver version.
+    let cache = unsafe {
+        device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+            label: Some("cubecl_pipeline_cache"),
+            data: data.as_deref(),
+            fallback: true,
+        })
+    };
+
+    log::info!(
+        "Pipeline cache: {} ({} bytes)",
+        save_path.display(),
+        cached_bytes,
+    );
+
+    Some(PipelineCacheState::new(cache, save_path))
+}
+
+#[cfg(target_family = "wasm")]
+fn create_pipeline_cache(
+    _device: &wgpu::Device,
+    _adapter: &wgpu::Adapter,
+) -> Option<PipelineCacheState> {
+    None
 }
 
 fn get_device_override() -> Option<WgpuDevice> {
