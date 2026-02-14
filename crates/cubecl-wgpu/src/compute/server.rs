@@ -33,7 +33,53 @@ use cubecl_runtime::{
     validation::{validate_cube_dim, validate_units},
 };
 use hashbrown::HashMap;
+use std::path::PathBuf;
 use wgpu::ComputePipeline;
+
+/// Persistent GPU pipeline cache for shader compilation across runs.
+///
+/// Wraps a [`wgpu::PipelineCache`] and its disk path so compiled shaders
+/// can be saved on shutdown and reloaded on next startup.
+pub(crate) struct PipelineCacheState {
+    /// The wgpu pipeline cache handle.
+    pub(crate) cache: wgpu::PipelineCache,
+    /// Path where the cache blob is persisted.
+    save_path: PathBuf,
+}
+
+impl std::fmt::Debug for PipelineCacheState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PipelineCacheState")
+            .field("save_path", &self.save_path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PipelineCacheState {
+    /// Create a new pipeline cache state from a wgpu cache and its save path.
+    pub(crate) fn new(cache: wgpu::PipelineCache, save_path: PathBuf) -> Self {
+        Self { cache, save_path }
+    }
+}
+
+impl PipelineCacheState {
+    /// Write the current cache contents to disk.
+    ///
+    /// This is called eagerly after each new pipeline is compiled, since the
+    /// global server static is never dropped on process exit.
+    pub(crate) fn save(&self) {
+        if let Some(data) = self.cache.get_data() {
+            if let Some(parent) = self.save_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            // Atomic write: write to temp file then rename.
+            let tmp = self.save_path.with_extension("tmp");
+            if std::fs::write(&tmp, &data).is_ok() {
+                let _ = std::fs::rename(&tmp, &self.save_path);
+            }
+        }
+    }
+}
 
 /// Wgpu compute server.
 #[derive(Debug)]
@@ -47,6 +93,7 @@ pub struct WgpuServer {
     pub compilation_options: WgpuCompilationOptions,
     pub(crate) backend: wgpu::Backend,
     pub(crate) utilities: Arc<ServerUtilities<Self>>,
+    pipeline_cache: Option<PipelineCacheState>,
 }
 
 impl ServerCommunication for WgpuServer {
@@ -108,6 +155,7 @@ impl WgpuServer {
             },
             backend,
             utilities: Arc::new(utilities),
+            pipeline_cache: None,
         }
     }
 
@@ -147,6 +195,9 @@ impl WgpuServer {
 
         if let Some(Ok(pipeline)) = cached {
             self.pipelines.insert(kernel_id, pipeline.clone());
+            if let Some(pc) = &self.pipeline_cache {
+                pc.save();
+            }
             return Ok(pipeline);
         }
 
@@ -205,6 +256,10 @@ impl WgpuServer {
             if let Err(err) = result {
                 log::warn!("Unable to save the SPIR-V {err:?}");
             }
+        }
+
+        if let Some(pc) = &self.pipeline_cache {
+            pc.save();
         }
 
         Ok(pipeline)

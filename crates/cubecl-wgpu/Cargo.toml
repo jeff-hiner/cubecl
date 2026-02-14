@@ -74,6 +74,8 @@ cubecl-cpp = { path = "../cubecl-cpp", version = "=0.10.0-pre.1", features = [
     "metal",
 ], optional = true }
 
+serde = { workspace = true }
+
 bytemuck = { workspace = true }
 
 async-channel = { workspace = true }
@@ -81,6 +83,7 @@ derive-new = { workspace = true }
 hashbrown = { workspace = true }
 
 cfg-if = { workspace = true }
+dirs = { workspace = true }
 
 ## wgpu dependency for platforms other than macOS
 [target.'cfg(not(target_os = "macos"))'.dependencies]

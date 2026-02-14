@@ -205,7 +205,7 @@ impl WgpuServer {
                     zero_initialize_workgroup_memory: false,
                     ..Default::default()
                 },
-                cache: None,
+                cache: self.pipeline_cache.as_ref().map(|s| &s.cache),
             });
         Arc::new(pipeline)
     }
